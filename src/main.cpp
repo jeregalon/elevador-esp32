@@ -2,10 +2,10 @@
 
 // ==== Pines ====
 // Sensores
-#define sensor_4to_piso 36 // antes 23
-#define sensor_3er_piso 39 // antes 22
-#define sensor_2do_piso 34 // antes 19
-#define sensor_1er_piso 35 // antes 18
+#define sensor_4to_piso 36
+#define sensor_3er_piso 39
+#define sensor_2do_piso 34
+#define sensor_1er_piso 35
 
 // Botones externos
 #define boton_ext_4to_piso 26
@@ -19,199 +19,456 @@
 #define boton_int_2do_piso 16
 #define boton_int_1er_piso 27
 
-// Salidas para marcar piso en el siete segmentos
+// Siete segmentos
 #define S2 19
 #define S1 23
 
-// ==== Estado del elevador ====
-enum EstadoElevador { PARADO, SUBIENDO, BAJANDO };
-EstadoElevador estado = PARADO;
+// Relés
+#define salida_rele_direccion 18
+#define salida_rele_arranque 22
 
-int piso_actual = 0; // 0 = entre pisos
-int destino = 0;
-bool solicitudes[5] = {false, false, false, false, false}; // índices 1-4
-
-// ==== Timer de reporte ====
-unsigned long ultimoReporte = 0;
-const unsigned long intervaloReporte = 1000;
-
-unsigned long ultimoCambioElevador = 0;
-const unsigned long intervaloCambioElevador = 1000;
-int escrituraSieteSeg = 1;
-
-// ==== Clase antirrebote ====
-class Boton {
-  int pin;
-  bool estado_anterior;
-  unsigned long ultimo_cambio;
-  const unsigned long debounce_delay = 50;
-
-public:
-  Boton(int p) : pin(p), estado_anterior(false), ultimo_cambio(0) {
-    pinMode(pin, INPUT_PULLUP);
-  }
-
-  bool presionado() {
-    bool lectura = digitalRead(pin) == LOW;
-    unsigned long ahora = millis();
-    if (lectura != estado_anterior && (ahora - ultimo_cambio) > debounce_delay) {
-      ultimo_cambio = ahora;
-      estado_anterior = lectura;
-      if (lectura == true) return true;
-    }
-    return false;
-  }
+enum STATE {
+  S_ENTRE_PISOS,
+  S_SUBIENDO,
+  S_PAR_SUB,
+  S_BAJANDO,
+  S_PAR_BAJ,
+  S_PARADO,
+  S_BAJANDO_AL_PISO_MAS_CERCANO
 };
 
-// ==== Botones ====
-Boton botones[8] = {
-  Boton(boton_ext_1er_piso),
-  Boton(boton_ext_2do_piso),
-  Boton(boton_ext_3er_piso),
-  Boton(boton_ext_4to_piso),
-  Boton(boton_int_1er_piso),
-  Boton(boton_int_2do_piso),
-  Boton(boton_int_3er_piso),
-  Boton(boton_int_4to_piso)
-};
+bool b1, b2, b3, b4, bc1, bc2, bc3, bc4, s1, s2, s3, s4;
 
-// ==== Funciones ====
-int leerPisoActual() {
-  if (digitalRead(sensor_1er_piso) == LOW) return 1;
-  if (digitalRead(sensor_2do_piso) == LOW) return 2;
-  if (digitalRead(sensor_3er_piso) == LOW) return 3;
-  if (digitalRead(sensor_4to_piso) == LOW) return 4;
-  return 0; // entre pisos
-}
+bool peticiones_internas[5] = {false, false, false, false, false};
 
-void leerBotones() {
-  for (int i = 0; i < 8; i++) {
-    if (botones[i].presionado()) {
-      int piso = (i % 4) + 1;
-      solicitudes[piso] = true;
-    }
-  }
-}
+bool peticiones_externas[5] = {false, false, false, false, false};
 
-int proximoDestino() {
-  if (estado == SUBIENDO) {
-    for (int i = piso_actual + 1; i <= 4; i++) {
-      if (solicitudes[i]) return i;
-    }
-  } else if (estado == BAJANDO) {
-    for (int i = piso_actual - 1; i >= 1; i--) {
-      if (solicitudes[i]) return i;
-    }
-  }
+bool *peticiones;
 
-  // Si no hay solicitudes en la dirección actual, buscar cualquier otra
-  for (int i = 1; i <= 4; i++) {
-    if (solicitudes[i]) return i;
-  }
+bool espera = true;
 
-  return 0;
-}
+STATE state = S_ENTRE_PISOS;
 
-void moverElevador() {
-  if (destino > piso_actual) {
-    estado = SUBIENDO;
-    Serial.println("Subiendo...");
-  } else if (destino < piso_actual) {
-    estado = BAJANDO;
-    Serial.println("Bajando...");
-  } else {
-    estado = PARADO;
-  }
-}
+int piso_actual = 0;
 
-void detenerse() {
-  solicitudes[piso_actual] = false;
-  Serial.print("Llegó al piso ");
-  Serial.println(piso_actual);
-  estado = PARADO;
-}
+int parado = 1;
+int arrancado = 0;
+int motor = parado;
 
-// Mostrar estado
-void reporteEstado() {
+int subiendo = 1;
+int bajando = 0;
+int direccion = bajando;
+
+ulong runTime;
+ulong tiempoEspera;
+
+ulong segundosEspera = 10;
+
+ulong suma_verificacion = 0;
+ulong suma_verificacion_anterior = 0;
+
+void registro_debug() {
+  Serial.print(s1);
+  Serial.print(" ");
+  Serial.print(s2);
+  Serial.print(" ");
+  Serial.print(s3);
+  Serial.print(" ");
+  Serial.print(s4);
+  Serial.print(" - ");
+  
+  Serial.print(b1);
+  Serial.print(" ");
+  Serial.print(b2);
+  Serial.print(" ");
+  Serial.print(b3);
+  Serial.print(" ");
+  Serial.print(b4);
+  Serial.print(" - ");
+  
+  Serial.print(bc1);
+  Serial.print(" ");
+  Serial.print(bc2);
+  Serial.print(" ");
+  Serial.print(bc3);
+  Serial.print(" ");
+  Serial.print(bc4);
+  
+  Serial.println();
+
   Serial.print("Piso actual: ");
-  Serial.print(piso_actual == 0 ? "Entre pisos" : String(piso_actual));
-  Serial.print(" | Destino: ");
-  Serial.print(destino == 0 ? "Ninguno" : String(destino));
-  Serial.print(" | Solicitudes: ");
+  Serial.print(piso_actual);
+
+  Serial.println();
+
+  Serial.print("Estado actual: ");
+  Serial.print(state);
+
+  Serial.println();
+
+  Serial.print("Peticiones internas: [");
   for (int i = 1; i <= 4; i++) {
-    Serial.print(solicitudes[i] ? "[X]" : "[ ]");
+    if (peticiones_internas[i]) {
+      Serial.print(" X ");
+    } else {
+      Serial.print(" - ");
+    }
   }
+
+  Serial.println();
+
+  Serial.print("Peticiones externas: [");
+  for (int i = 1; i <= 4; i++) {
+    if (peticiones_externas[i]) {
+      Serial.print(" X ");
+    } else {
+      Serial.print(" - ");
+    }
+  }
+
+  Serial.println();
+
+  Serial.print("Peticiones: [");
+  for (int i = 1; i <= 4; i++) {
+    if (peticiones[i]) {
+      Serial.print(" X ");
+    } else {
+      Serial.print(" - ");
+    }
+  }
+
   Serial.println();
 }
 
-// ==== Setup y Loop ====
-void setup() {
-  Serial.begin(9600);
-  pinMode(sensor_1er_piso, INPUT);
-  pinMode(sensor_2do_piso, INPUT);
-  pinMode(sensor_3er_piso, INPUT);
-  pinMode(sensor_4to_piso, INPUT);
-
-  pinMode(S2, OUTPUT);
-  pinMode(S1, OUTPUT);
-  Serial.println("Elevador listo.");
+bool hay_peticiones_internas() {
+  for (int i = 1; i <= 4; i++) {
+    if (peticiones_internas[i]) return true;
+  }
+  return false;
 }
 
+const char* bitsPiso(int piso) {
+  switch (piso) {
+      case 1: return "00";
+      case 2: return "01";
+      case 3: return "11";
+      case 4: return "10";
+      default: return "22";
+  }
+}
+
+const char* bitsState(STATE _state) {
+  switch (_state) {
+      case S_ENTRE_PISOS: return "000";
+      case S_BAJANDO_AL_PISO_MAS_CERCANO: return "001";
+      case S_PAR_SUB: return "010";
+      case S_PAR_BAJ: return "011";
+      case S_SUBIENDO: return "100";
+      case S_BAJANDO: return "101";
+      case S_PARADO: return "110";
+      default: return "111";
+  }
+}
+
+int boolToInt(bool value) {
+  switch (value) {
+  case false: return 0;
+  case true: return 1;
+  default:
+    return 2;
+  }
+}
+
+void setup() {
+  pinMode(sensor_4to_piso, INPUT_PULLUP);
+  pinMode(sensor_3er_piso, INPUT_PULLUP);
+  pinMode(sensor_2do_piso, INPUT_PULLUP);
+  pinMode(sensor_1er_piso, INPUT_PULLUP);
+
+// Botones externos
+  pinMode(boton_ext_4to_piso, INPUT_PULLUP);
+  pinMode(boton_ext_3er_piso, INPUT_PULLUP);
+  pinMode(boton_ext_2do_piso, INPUT_PULLUP);
+  pinMode(boton_ext_1er_piso, INPUT_PULLUP);
+
+// Botones internos
+  pinMode(boton_int_4to_piso, INPUT_PULLUP);
+  pinMode(boton_int_3er_piso, INPUT_PULLUP);
+  pinMode(boton_int_2do_piso, INPUT_PULLUP);
+  pinMode(boton_int_1er_piso, INPUT_PULLUP);
+
+// Siete segmentos
+  pinMode(S2, OUTPUT);
+  pinMode(S1, OUTPUT);
+
+// Relés
+  pinMode(salida_rele_direccion, OUTPUT);
+  pinMode(salida_rele_arranque, OUTPUT);
+
+  digitalWrite(salida_rele_arranque, HIGH);
+  digitalWrite(salida_rele_direccion, HIGH);
+
+  Serial.begin(115200);
+
+}
+
+
 void loop() {
-  if (millis() - ultimoReporte >= intervaloReporte) {
-    reporteEstado();
-    ultimoReporte = millis();
+
+  runTime = millis();
+
+  s1 = !digitalRead(sensor_1er_piso); 
+  s2 = digitalRead(sensor_2do_piso); 
+  s3 = digitalRead(sensor_3er_piso); 
+  s4 = !digitalRead(sensor_4to_piso); 
+
+  b1 = digitalRead(boton_ext_1er_piso); 
+  b2 = digitalRead(boton_ext_2do_piso); 
+  b3 = digitalRead(boton_ext_3er_piso); 
+  b4 = digitalRead(boton_ext_4to_piso); 
+
+  bc1 = digitalRead(boton_int_1er_piso); 
+  bc2 = digitalRead(boton_int_2do_piso); 
+  bc3 = digitalRead(boton_int_3er_piso); 
+  bc4 = digitalRead(boton_int_4to_piso); 
+
+  if (!bc1 && s1 && !peticiones_internas[1]) {
+    peticiones_internas[1] = true;
   }
 
-  leerBotones();
-  int nuevo_piso = leerPisoActual();
-
-  if (nuevo_piso != 0) {
-    piso_actual = nuevo_piso;
+  if (!bc2 && s2 && !peticiones_internas[2]) {
+    peticiones_internas[2] = true;
   }
 
-  if (piso_actual == 0) {
-    estado = PARADO;
-    return;
+  if (!bc3 && s3 && !peticiones_internas[3]) {
+    peticiones_internas[3] = true;
   }
 
-  if (estado == PARADO) {
-    destino = proximoDestino();
-    if (destino != 0 && destino != piso_actual) {
-      moverElevador();
-    }
+  if (!bc4 && s4 && !peticiones_internas[4]) {
+    peticiones_internas[4] = true;
+  }
+
+  if (!b1 && s1 && !peticiones_externas[1]) {
+    peticiones_externas[1] = true;
+  }
+
+  if (!b2 && s2 && !peticiones_externas[2]) {
+    peticiones_externas[2] = true;
+  }
+
+  if (!b3 && s3 && !peticiones_externas[3]) {
+    peticiones_externas[3] = true;
+  }
+
+  if (!b4 && s4 && !peticiones_externas[4]) {
+    peticiones_externas[4] = true;
+  }
+
+  // Se priorizan las peticiones internas sobre las externas
+  if (hay_peticiones_internas) {
+    peticiones = peticiones_internas;
   } else {
-    if (solicitudes[piso_actual]) {
-      detenerse();
-      destino = proximoDestino();  // Actualiza para continuar si hay más pisos
-    }
+    peticiones = peticiones_externas;
   }
 
-  if (millis() - ultimoCambioElevador >= intervaloCambioElevador) {
+  switch (state) {
+    case S_ENTRE_PISOS:
+      if (!s1) {
+        piso_actual = 1;
+        state = S_PARADO;
+      } else if (!s2) {
+        piso_actual = 2;
+        state = S_PARADO;
+      } else if (!s3) {
+        piso_actual = 3;
+        state = S_PARADO;
+      } else if (!s4) {
+        piso_actual = 4;
+        state = S_PARADO;
+      } else {
+        state = S_BAJANDO_AL_PISO_MAS_CERCANO;
+      }
+      break;
 
-    ultimoCambioElevador = millis();
+    case S_BAJANDO_AL_PISO_MAS_CERCANO:
+      if (!s3) {
+        piso_actual = 3;
+        state = S_PARADO;
+      } else if (!s2) {
+        piso_actual = 2;
+        state = S_PARADO;
+      } else if (!s1) {
+        piso_actual = 1;
+        state = S_PARADO;
+      }
+      break;
+
+    case S_SUBIENDO:
+      if (!s2 && peticiones[2]) {
+        piso_actual = 2;
+        espera = true;
+        peticiones[2] = false;
+        state = S_PAR_SUB;
+      } else if (!s3 && peticiones[3]) {
+        piso_actual = 3;
+        espera = true;
+        peticiones[3] = false;
+        state = S_PAR_SUB;
+      } else if (!s4) {
+        piso_actual = 4;
+        espera = true;
+        peticiones[4] = false;
+        state = S_PAR_BAJ;
+      }
+      break;
+
+      case S_PAR_SUB:
+        tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
+        if (!espera) {
+          bool peticiones_arriba = false;
+          for (int i = piso_actual + 1; i <= 4; i++) {
+            if (peticiones[i]) {
+              peticiones_arriba = true;
+              state = S_SUBIENDO;
+              break;
+            }
+          }
+          if (!peticiones_arriba) {
+            espera = false;
+            state = S_PAR_BAJ;
+          }
+        }
+        break;
+
+      case S_PAR_BAJ:
+        tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
+        if (!espera) {
+          bool peticiones_abajo = false;
+          for (int i = piso_actual - 1; i >= 1; i--) {
+            if (peticiones[i]) {
+              peticiones_abajo = true;
+              state = S_BAJANDO;
+              break;
+            }
+          }
+          if (!peticiones_abajo) {
+            state = S_PARADO;
+          }
+        }
+        break;
+
+      case S_BAJANDO:
+        if (!s3 && peticiones[3]) {
+          piso_actual = 3;
+          espera = true;
+          peticiones[3] = false;
+          state = S_PAR_BAJ;
+        } else if (!s2 && peticiones[2]) {
+          piso_actual = 2;
+          espera = true;
+          peticiones[2] = false;
+          state = S_PAR_BAJ;
+        } else if (!s1) {
+          piso_actual = 1;
+          espera = true;
+          peticiones[1] = false;
+          state = S_PAR_SUB;
+        }
+        break;
+
+      case S_PARADO:
+        bool peticiones_arriba = false;
+        bool peticiones_abajo = false;
+        for (int i = piso_actual + 1; i <= 4; i++) {
+          if (peticiones[i]) {
+            peticiones_arriba = true;
+            state = S_SUBIENDO;
+            break;
+          }
+        }
+        if (!peticiones_arriba) {
+          for (int i = piso_actual - 1; i >= 1; i--) {
+            if (peticiones[i]) {
+              peticiones_abajo = true;
+              state = S_BAJANDO;
+              break;
+            }
+          }
+        }
+        break;
+
+    default:
+      break;
   }
 
-      switch (piso_actual) {
-      case 1:
-        digitalWrite(S2, 0);
-        digitalWrite(S1, 0);
-        break;
-      case 2:
-        digitalWrite(S2, 0);
-        digitalWrite(S1, 1);
-        break;
-      case 3:
-        digitalWrite(S2, 1);
-        digitalWrite(S1, 1);
-        break;
-      case 4:
-        digitalWrite(S2, 1);
-        digitalWrite(S1, 0);
-        break;
-      default:
-        digitalWrite(S2, 0);
-        digitalWrite(S1, 0);
-    }
+  if (runTime > tiempoEspera) {
+    espera = false;
+  }
+
+  if (state == S_SUBIENDO) {
+    motor = arrancado;
+    direccion = subiendo;
+  } else if (state == S_BAJANDO || state == S_BAJANDO_AL_PISO_MAS_CERCANO) {
+    motor = arrancado;
+    direccion = bajando;
+  } else {
+    motor = parado;
+  }
+
+  digitalWrite(salida_rele_arranque, motor);
+  digitalWrite(salida_rele_direccion, direccion);
   
+  if (!s1) {
+    digitalWrite(S2, 0); digitalWrite(S1, 0);
+  }
+
+  if (!s2) {
+    digitalWrite(S2, 0); digitalWrite(S1, 1);
+  }
+
+  if (!s3) {
+    digitalWrite(S2, 1); digitalWrite(S1, 1);
+  }
+
+  if (!s4) {
+    digitalWrite(S2, 1); digitalWrite(S1, 0);
+  }
+
+  // DEBUG
+
+  const char* bits_piso_actual = bitsPiso(piso_actual);
+  int piso_actual_bit_1 = bits_piso_actual[0] - '0';
+  int piso_actual_bit_2 = bits_piso_actual[1] - '0';
+
+  const char* bits_estado_actual = bitsState(state);
+  int estado_actual_bit_1 = bits_estado_actual[0] - '0';
+  int estado_actual_bit_2 = bits_estado_actual[1] - '0';
+  int estado_actual_bit_3 = bits_estado_actual[2] - '0';
+
+  suma_verificacion_anterior = suma_verificacion;
+  suma_verificacion = 1 * s1 + 2 * s2 + 4 * s3 + 8 * s4
+  + 16 * bc1 + 32 * bc2 + 64 * bc3 + 128 * bc4
+  + 256 * b1 + 512 * b2 + 1024 * b3 + 2048 * b4
+  + 4096 * piso_actual_bit_1 + 8192 * piso_actual_bit_2
+  + 16384 * estado_actual_bit_1 + 32768 * estado_actual_bit_2
+  + 65536 * estado_actual_bit_3;
+
+  int multiplicador = 65536;
+
+  ulong suma_peticiones = 0;
+  for (int i = 1; i <= 4; i++) {
+    multiplicador *= 2;
+    suma_peticiones += multiplicador * boolToInt(peticiones_externas[i]); 
+  }
+  for (int i = 1; i <= 4; i++) {
+    multiplicador *= 2;
+    suma_peticiones += multiplicador * boolToInt(peticiones_internas[i]); 
+  }
+
+  suma_verificacion += suma_peticiones;
+
+  if (suma_verificacion != suma_verificacion_anterior) {
+    registro_debug();
+  }
+
 }
