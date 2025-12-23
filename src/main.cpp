@@ -27,6 +27,9 @@
 #define salida_rele_direccion 18
 #define salida_rele_arranque 22
 
+// Led de espera
+#define led_espera 2
+
 enum STATE {
   S_ENTRE_PISOS,
   S_SUBIENDO,
@@ -45,7 +48,7 @@ bool peticiones_externas[5] = {false, false, false, false, false};
 
 bool *peticiones;
 
-bool espera = true;
+bool espera, espera_anterior;
 
 STATE state = S_ENTRE_PISOS;
 
@@ -66,6 +69,19 @@ ulong segundosEspera = 10;
 
 ulong suma_verificacion = 0;
 ulong suma_verificacion_anterior = 0;
+
+const char* stateToString(STATE state) {
+  switch (state) {
+    case S_ENTRE_PISOS: return "S_ENTRE_PISOS";
+    case S_SUBIENDO: return "S_SUBIENDO";
+    case S_PAR_SUB: return "S_PAR_SUB";
+    case S_BAJANDO: return "S_BAJANDO";
+    case S_PAR_BAJ: return "S_PAR_BAJ";
+    case S_PARADO: return "S_PARADO";
+    case S_BAJANDO_AL_PISO_MAS_CERCANO: return "S_BAJANDO_AL_PISO_MAS_CERCANO";
+    default: return "ESTADO_DESCONOCIDO";
+  }
+}
 
 void registro_debug() {
   Serial.print(s1);
@@ -102,7 +118,7 @@ void registro_debug() {
   Serial.println();
 
   Serial.print("Estado actual: ");
-  Serial.print(state);
+  Serial.print(stateToString(state));
 
   Serial.println();
 
@@ -138,6 +154,11 @@ void registro_debug() {
   }
 
   Serial.println();
+
+  Serial.print("Espera: ");
+  Serial.print(espera);
+
+  Serial.println();
 }
 
 bool hay_peticiones_internas() {
@@ -171,12 +192,8 @@ const char* bitsState(STATE _state) {
 }
 
 int boolToInt(bool value) {
-  switch (value) {
-  case false: return 0;
-  case true: return 1;
-  default:
-    return 2;
-  }
+  if (value) return 1;
+  else return 0;
 }
 
 void setup() {
@@ -204,6 +221,9 @@ void setup() {
 // Relés
   pinMode(salida_rele_direccion, OUTPUT);
   pinMode(salida_rele_arranque, OUTPUT);
+
+// LED de espera
+  pinMode(led_espera, OUTPUT);
 
   digitalWrite(salida_rele_arranque, HIGH);
   digitalWrite(salida_rele_direccion, HIGH);
@@ -264,15 +284,18 @@ void loop() {
     peticiones_externas[4] = true;
   }
 
-  // Se priorizan las peticiones internas sobre las externas
-  if (hay_peticiones_internas) {
-    peticiones = peticiones_internas;
-  } else {
-    peticiones = peticiones_externas;
-  }
+  // // Se priorizan las peticiones internas sobre las externas
+  // if (hay_peticiones_internas) {
+  //   peticiones = peticiones_internas;
+  // } else {
+  //   peticiones = peticiones_externas;
+  // }
+
+  peticiones = peticiones_externas;
 
   switch (state) {
-    case S_ENTRE_PISOS:
+
+    case S_ENTRE_PISOS: {
       if (!s1) {
         piso_actual = 1;
         state = S_PARADO;
@@ -289,8 +312,9 @@ void loop() {
         state = S_BAJANDO_AL_PISO_MAS_CERCANO;
       }
       break;
+    }
 
-    case S_BAJANDO_AL_PISO_MAS_CERCANO:
+    case S_BAJANDO_AL_PISO_MAS_CERCANO: {
       if (!s3) {
         piso_actual = 3;
         state = S_PARADO;
@@ -302,8 +326,9 @@ void loop() {
         state = S_PARADO;
       }
       break;
+    }
 
-    case S_SUBIENDO:
+    case S_SUBIENDO: {
       if (!s2 && peticiones[2]) {
         piso_actual = 2;
         espera = true;
@@ -321,64 +346,12 @@ void loop() {
         state = S_PAR_BAJ;
       }
       break;
+    }
 
-      case S_PAR_SUB:
-        tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
-        if (!espera) {
-          bool peticiones_arriba = false;
-          for (int i = piso_actual + 1; i <= 4; i++) {
-            if (peticiones[i]) {
-              peticiones_arriba = true;
-              state = S_SUBIENDO;
-              break;
-            }
-          }
-          if (!peticiones_arriba) {
-            espera = false;
-            state = S_PAR_BAJ;
-          }
-        }
-        break;
-
-      case S_PAR_BAJ:
-        tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
-        if (!espera) {
-          bool peticiones_abajo = false;
-          for (int i = piso_actual - 1; i >= 1; i--) {
-            if (peticiones[i]) {
-              peticiones_abajo = true;
-              state = S_BAJANDO;
-              break;
-            }
-          }
-          if (!peticiones_abajo) {
-            state = S_PARADO;
-          }
-        }
-        break;
-
-      case S_BAJANDO:
-        if (!s3 && peticiones[3]) {
-          piso_actual = 3;
-          espera = true;
-          peticiones[3] = false;
-          state = S_PAR_BAJ;
-        } else if (!s2 && peticiones[2]) {
-          piso_actual = 2;
-          espera = true;
-          peticiones[2] = false;
-          state = S_PAR_BAJ;
-        } else if (!s1) {
-          piso_actual = 1;
-          espera = true;
-          peticiones[1] = false;
-          state = S_PAR_SUB;
-        }
-        break;
-
-      case S_PARADO:
+    case S_PAR_SUB: {
+      // if (!espera) tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
+      if (!espera) {
         bool peticiones_arriba = false;
-        bool peticiones_abajo = false;
         for (int i = piso_actual + 1; i <= 4; i++) {
           if (peticiones[i]) {
             peticiones_arriba = true;
@@ -387,22 +360,76 @@ void loop() {
           }
         }
         if (!peticiones_arriba) {
-          for (int i = piso_actual - 1; i >= 1; i--) {
-            if (peticiones[i]) {
-              peticiones_abajo = true;
-              state = S_BAJANDO;
-              break;
-            }
+          espera = false;
+          state = S_PAR_BAJ;
+        }
+      }
+      break;
+    }
+
+    case S_PAR_BAJ: {
+      // if (!espera) tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
+      if (!espera) {
+        bool peticiones_abajo = false;
+        for (int i = piso_actual - 1; i >= 1; i--) {
+          if (peticiones[i]) {
+            peticiones_abajo = true;
+            state = S_BAJANDO;
+            break;
           }
         }
-        break;
-
-    default:
+        if (!peticiones_abajo) {
+          state = S_PARADO;
+        }
+      }
       break;
-  }
+    }
 
-  if (runTime > tiempoEspera) {
-    espera = false;
+    case S_BAJANDO: {
+      if (!s3 && peticiones[3]) {
+        piso_actual = 3;
+        espera = true;
+        peticiones[3] = false;
+        state = S_PAR_BAJ;
+      } else if (!s2 && peticiones[2]) {
+        piso_actual = 2;
+        espera = true;
+        peticiones[2] = false;
+        state = S_PAR_BAJ;
+      } else if (!s1) {
+        piso_actual = 1;
+        espera = true;
+        peticiones[1] = false;
+        state = S_PAR_SUB;
+      }
+      break;
+    }
+
+    case S_PARADO: {
+      bool _peticiones_arriba = false;
+      bool _peticiones_abajo = false;
+      for (int i = piso_actual + 1; i <= 4; i++) {
+        if (peticiones[i]) {
+          _peticiones_arriba = true;
+          state = S_SUBIENDO;
+          break;
+        }
+      }
+      if (!_peticiones_arriba) {
+        for (int i = piso_actual - 1; i >= 1; i--) {
+          if (peticiones[i]) {
+            _peticiones_abajo = true;
+            state = S_BAJANDO;
+            break;
+          }
+        }
+      }
+      break;
+    }
+
+    default: {
+      break;
+    }
   }
 
   if (state == S_SUBIENDO) {
@@ -417,6 +444,12 @@ void loop() {
 
   digitalWrite(salida_rele_arranque, motor);
   digitalWrite(salida_rele_direccion, direccion);
+
+  if (espera) {
+    digitalWrite(led_espera, HIGH);
+  } else {
+    digitalWrite(led_espera, LOW);
+  }
   
   if (!s1) {
     digitalWrite(S2, 0); digitalWrite(S1, 0);
@@ -433,6 +466,16 @@ void loop() {
   if (!s4) {
     digitalWrite(S2, 1); digitalWrite(S1, 0);
   }
+
+// disparar el timer
+  
+  if (espera && !espera_anterior) tiempoEspera = runTime + segundosEspera * 1000;  
+  
+  if (runTime > tiempoEspera) {
+    espera = false;
+  }
+  
+  espera_anterior = espera;
 
   // DEBUG
 
@@ -451,9 +494,9 @@ void loop() {
   + 256 * b1 + 512 * b2 + 1024 * b3 + 2048 * b4
   + 4096 * piso_actual_bit_1 + 8192 * piso_actual_bit_2
   + 16384 * estado_actual_bit_1 + 32768 * estado_actual_bit_2
-  + 65536 * estado_actual_bit_3;
+  + 65536 * estado_actual_bit_3 + 131072 * boolToInt(espera);
 
-  int multiplicador = 65536;
+  int multiplicador = 131072;
 
   ulong suma_peticiones = 0;
   for (int i = 1; i <= 4; i++) {
