@@ -50,6 +50,14 @@ bool *peticiones;
 
 bool espera, espera_anterior;
 
+bool ledOn, lecturaAnterior;
+
+bool _hay_peticiones_internas = false;
+
+bool mov_pet_ext = false;
+
+int pet_actuales = 0;  // 0 externas  1 internas
+
 STATE state = S_ENTRE_PISOS;
 
 int piso_actual = 0;
@@ -64,8 +72,10 @@ int direccion = bajando;
 
 ulong runTime;
 ulong tiempoEspera;
+ulong tEsperaLed;
 
-ulong segundosEspera = 10;
+ulong segundosEspera = 5;
+ulong msEsperaLed = 500;
 
 ulong suma_verificacion = 0;
 ulong suma_verificacion_anterior = 0;
@@ -81,6 +91,13 @@ const char* stateToString(STATE state) {
     case S_BAJANDO_AL_PISO_MAS_CERCANO: return "S_BAJANDO_AL_PISO_MAS_CERCANO";
     default: return "ESTADO_DESCONOCIDO";
   }
+}
+
+bool hay_peticiones_internas() {
+  for (int i = 1; i <= 4; i++) {
+    if (peticiones_internas[i]) return true;
+  }
+  return false;
 }
 
 void registro_debug() {
@@ -155,17 +172,15 @@ void registro_debug() {
 
   Serial.println();
 
+  Serial.print("hay peticiones internas: ");
+  Serial.print(_hay_peticiones_internas);
+
+  Serial.println();
+
   Serial.print("Espera: ");
   Serial.print(espera);
 
   Serial.println();
-}
-
-bool hay_peticiones_internas() {
-  for (int i = 1; i <= 4; i++) {
-    if (peticiones_internas[i]) return true;
-  }
-  return false;
 }
 
 const char* bitsPiso(int piso) {
@@ -194,6 +209,18 @@ const char* bitsState(STATE _state) {
 int boolToInt(bool value) {
   if (value) return 1;
   else return 0;
+}
+
+void esperaIntermitente() {
+  ledOn = digitalRead(led_espera) == HIGH;
+  if (ledOn != lecturaAnterior) tEsperaLed = runTime + msEsperaLed;  
+  
+  if (runTime > tEsperaLed) {
+    int proximoEstadoLed = ledOn ? 0 : 1;
+    digitalWrite(led_espera, proximoEstadoLed);
+  }
+  
+  lecturaAnterior = digitalRead(led_espera) == HIGH;
 }
 
 void setup() {
@@ -236,6 +263,8 @@ void setup() {
 void loop() {
 
   runTime = millis();
+
+  _hay_peticiones_internas = hay_peticiones_internas();
 
   s1 = !digitalRead(sensor_1er_piso); 
   s2 = digitalRead(sensor_2do_piso); 
@@ -284,18 +313,21 @@ void loop() {
     peticiones_externas[4] = true;
   }
 
-  // // Se priorizan las peticiones internas sobre las externas
-  // if (hay_peticiones_internas) {
-  //   peticiones = peticiones_internas;
-  // } else {
-  //   peticiones = peticiones_externas;
-  // }
+  // Se priorizan las peticiones internas sobre las externas
+  if (_hay_peticiones_internas && !mov_pet_ext) {
+    peticiones = peticiones_internas;
+    pet_actuales = 1;
+  } else {
+    peticiones = peticiones_externas;
+    pet_actuales = 0;
+  }
 
-  peticiones = peticiones_externas;
+  // peticiones = peticiones_externas;
 
   switch (state) {
 
     case S_ENTRE_PISOS: {
+      mov_pet_ext = false;
       if (!s1) {
         piso_actual = 1;
         state = S_PARADO;
@@ -315,6 +347,7 @@ void loop() {
     }
 
     case S_BAJANDO_AL_PISO_MAS_CERCANO: {
+      mov_pet_ext = false;
       if (!s3) {
         piso_actual = 3;
         state = S_PARADO;
@@ -329,6 +362,11 @@ void loop() {
     }
 
     case S_SUBIENDO: {
+      if (pet_actuales == 0) {
+        mov_pet_ext = true;
+      } else {
+        mov_pet_ext = false;
+      }
       if (!s2 && peticiones[2]) {
         piso_actual = 2;
         espera = true;
@@ -349,7 +387,7 @@ void loop() {
     }
 
     case S_PAR_SUB: {
-      // if (!espera) tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
+      mov_pet_ext = false;
       if (!espera) {
         bool peticiones_arriba = false;
         for (int i = piso_actual + 1; i <= 4; i++) {
@@ -368,7 +406,7 @@ void loop() {
     }
 
     case S_PAR_BAJ: {
-      // if (!espera) tiempoEspera = runTime + segundosEspera * 1000;  // disparar el timer
+      mov_pet_ext = false;
       if (!espera) {
         bool peticiones_abajo = false;
         for (int i = piso_actual - 1; i >= 1; i--) {
@@ -386,6 +424,11 @@ void loop() {
     }
 
     case S_BAJANDO: {
+      if (pet_actuales == 0) {
+        mov_pet_ext = true;
+      } else {
+        mov_pet_ext = false;
+      }
       if (!s3 && peticiones[3]) {
         piso_actual = 3;
         espera = true;
@@ -406,6 +449,7 @@ void loop() {
     }
 
     case S_PARADO: {
+      mov_pet_ext = false;
       bool _peticiones_arriba = false;
       bool _peticiones_abajo = false;
       for (int i = piso_actual + 1; i <= 4; i++) {
@@ -446,7 +490,7 @@ void loop() {
   digitalWrite(salida_rele_direccion, direccion);
 
   if (espera) {
-    digitalWrite(led_espera, HIGH);
+    esperaIntermitente();
   } else {
     digitalWrite(led_espera, LOW);
   }
@@ -494,9 +538,10 @@ void loop() {
   + 256 * b1 + 512 * b2 + 1024 * b3 + 2048 * b4
   + 4096 * piso_actual_bit_1 + 8192 * piso_actual_bit_2
   + 16384 * estado_actual_bit_1 + 32768 * estado_actual_bit_2
-  + 65536 * estado_actual_bit_3 + 131072 * boolToInt(espera);
+  + 65536 * estado_actual_bit_3 + 131072 * boolToInt(espera)
+  + 262144 * boolToInt(_hay_peticiones_internas);
 
-  int multiplicador = 131072;
+  int multiplicador = 262144;
 
   ulong suma_peticiones = 0;
   for (int i = 1; i <= 4; i++) {
@@ -513,5 +558,7 @@ void loop() {
   if (suma_verificacion != suma_verificacion_anterior) {
     registro_debug();
   }
+
+  delay(100);
 
 }
